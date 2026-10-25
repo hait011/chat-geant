@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>CHAT GÉANT</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+*{box-sizing:border-box}body{margin:0;font:16px system-ui,sans-serif;background:#0b1220;color:#e8edf5;-webkit-tap-highlight-color:transparent}
+.pad{padding:16px;padding-top:max(16px,env(safe-area-inset-top))}h2,h3{margin:.4em 0}
+button{display:block;width:100%;padding:14px;margin:8px 0;border:0;border-radius:12px;background:#f59e0b;color:#111;font-weight:700;font-size:16px}
+button.g{background:#1e293b;color:#e8edf5}button.r{background:#dc2626;color:#fff}button:disabled{opacity:.4}
+input,select{width:100%;padding:12px;margin:4px 0;border-radius:10px;border:1px solid #334155;background:#111a2e;color:#fff;font-size:16px}
+label{display:block;font-size:14px;color:#9fb0c7}.chk{display:flex;gap:8px;align-items:flex-start;margin:10px 0}.chk input{width:auto}
+.hero{min-height:100vh;display:flex;flex-direction:column;justify-content:center;padding:24px;text-align:center;background:radial-gradient(circle at 50% 15%,#24476f,#0b1220 70%)}
+.big{font-size:36px;font-weight:900;letter-spacing:1px;margin-bottom:6px}.big2{font-size:28px;font-weight:800;margin:8px 0}
+.code{font-size:44px;font-weight:900;letter-spacing:8px;text-align:center;color:#f59e0b}
+.pick{height:240px;border-radius:12px;margin-bottom:10px}.full{position:fixed;inset:0 0 44vh 0}
+.sheet{position:fixed;left:0;right:0;bottom:0;height:44vh;overflow:auto;background:#0b1220f2;padding:10px 12px calc(10px + env(safe-area-inset-bottom));border-radius:16px 16px 0 0;z-index:1000}
+ul{list-style:none;padding:0}li{padding:6px 0;border-bottom:1px solid #1e293b}.sheet li button{display:inline-block;width:auto;padding:6px 10px;margin:0 0 0 6px}
+.warn{background:#7f1d1d;padding:8px;border-radius:8px;margin:6px 0}.ok{background:#14532d;padding:8px;border-radius:8px}.row{display:flex;gap:8px}
+.flash{position:fixed;inset:0;display:grid;place-items:center;font-size:48px;font-weight:900;background:#000a;z-index:3000;animation:f 2.2s forwards}
+@keyframes f{0%{transform:scale(.3);opacity:0}20%{transform:scale(1.1);opacity:1}100%{opacity:0}}
+</style></head><body><div id="app"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.1"></script>
+<script>
+// Projet Supabase : URL + clé « publishable » (clé publique, faite pour être dans le navigateur). Jamais la clé « secret ».
+const SB_URL='https://avxvkzbwgsussygffnji.supabase.co',SB_KEY='sb_publishable_j0nm1JagO6TiDvLHdmpxRg_SJzF4l4p';
+const sb=supabase.createClient(SB_URL,SB_KEY),$=s=>document.querySelector(s);
+const S={gid:localStorage.gid||null,st:null,off:0,pos:null,share:false,watch:null,map:null,mk:{},sel:{},poll:null,ok:true};
+const T=s=>Date.parse(String(s).replace(/(\.\d{3})\d+/,'$1'));
+const sNow=()=>Date.now()+S.off,ref=()=>S.st.game.status==='paused'?T(S.st.game.paused_at):sNow();
+const fmt=ms=>{ms=Math.max(0,Math.floor(ms/1000));return Math.floor(ms/60)+':'+String(ms%60).padStart(2,'0')};
+const dist=(a,b,c,d)=>{const r=Math.PI/180,x=Math.sin((c-a)*r/2)**2+Math.cos(a*r)*Math.cos(c*r)*Math.sin((d-b)*r/2)**2;return 12742000*Math.asin(Math.min(1,Math.sqrt(x)))};
+const esc=s=>String(s).replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');
+const app=h=>{$('#app').innerHTML=h};
+async function rpc(f,a){const{data,error}=await sb.rpc(f,a);if(error){alert(error.message);throw error}return data}
+function killMap(){if(S.map){S.map.remove();S.map=null;S.mk={}}}
+function tiles(m){L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(m)}
+
+/* ---------- GPS (consentement explicite, arrêt possible) ---------- */
+function consent(on){
+  if(!on){stopGPS();if(S.st)draw();return}
+  if(!navigator.geolocation)return alert('GPS indisponible sur cet appareil');
+  S.share=true;S.gpsErr=null;
+  if(S.watch==null)S.watch=navigator.geolocation.watchPosition(
+    p=>{S.pos={lat:p.coords.latitude,lng:p.coords.longitude,acc:p.coords.accuracy,t:Date.now()}},
+    e=>{S.gpsErr=e.code===1?'permission refusée':e.message},{enableHighAccuracy:true,maximumAge:2000,timeout:20000});
+  if(S.st)draw();
+}
+function stopGPS(){if(S.watch!=null)navigator.geolocation.clearWatch(S.watch);S.watch=null;S.pos=null;S.share=false}
+
+/* ---------- Synchronisation (état filtré par le serveur, horloge serveur) ---------- */
+async function load(){const{data,error}=await sb.rpc('get_state',{p_g:S.gid});if(error)throw error;S.st=data;S.off=data.now-Date.now()}
+async function poll(){
+  if(!S.gid)return;
+  try{const g=S.st&&S.st.game;
+    if(S.share&&S.pos&&g&&g.status==='running'&&Date.now()-S.pos.t<30000)
+      await sb.rpc('push_pos',{p_g:S.gid,p_lat:S.pos.lat,p_lng:S.pos.lng,p_acc:S.pos.acc});
+    await load();S.ok=true}catch(e){S.ok=false}
+  if(S.st)draw();
+}
+async function enter(g){S.gid=g;localStorage.gid=g;await load();if(!S.poll)S.poll=setInterval(poll,3000);draw()}
+function leave(){clearInterval(S.poll);S.poll=null;S.gid=null;S.st=null;localStorage.removeItem('gid');stopGPS();home()}
+function draw(){const s=S.st.game.status;if(s==='ended'&&S.poll){clearInterval(S.poll);S.poll=null}s==='lobby'?lobby():s==='ended'?endScr():game()}
+
+/* ---------- Écrans ---------- */
+function home(){killMap();app(`<div class=hero><div class=big>🐱 CHAT GÉANT 🐭</div><p>Le chat et la souris, en vrai, avec carte GPS</p>
+<button onclick="createScr()">Créer une partie</button><button onclick="joinScr()">Rejoindre une partie</button>
+<button class=g onclick="rules()">Règles du jeu</button><button class=g onclick="settings()">Paramètres</button></div>`)}
+function rules(){killMap();app(`<div class=pad><h2>Règles du jeu</h2><p>🐱 Le chat voit les souris sur la carte. 🐭 Les souris ne voient jamais le chat. Chaque souris a son chronomètre : survivre jusqu'à zéro. Le chat déclare une capture quand il est assez proche ; le serveur la vérifie (GPS récent, précis, dans la zone).</p><p>Restez dans le cercle, sur des lieux autorisés et sûrs. Ne courez jamais sur la route, n'entrez pas en propriété privée.</p><button onclick="home()">Retour</button></div>`)}
+function settings(){killMap();app(`<div class=pad><h2>Paramètres</h2><input id=sn placeholder="Pseudo par défaut" value="${esc(localStorage.pseudo||'')}"><label class=chk><input id=ss type=checkbox ${localStorage.snd!=='0'?'checked':''}> Alerte sonore avant la fin du chrono</label><button onclick="localStorage.pseudo=$('#sn').value;localStorage.snd=$('#ss').checked?1:0;home()">Enregistrer</button></div>`)}
+function joinScr(){killMap();app(`<div class=pad><h2>Rejoindre</h2><input id=jc placeholder="CODE" maxlength=5 autocapitalize=characters><input id=jn placeholder="Pseudo" value="${esc(localStorage.pseudo||'')}"><button onclick="doJoin()">Rejoindre</button><button class=g onclick="home()">Retour</button></div>`)}
+async function doJoin(){localStorage.pseudo=$('#jn').value;enter(await rpc('join_game',{p_code:$('#jc').value,p_name:$('#jn').value}))}
+
+function createScr(){killMap();app(`<div class=pad><h2>Créer une partie</h2>
+<input id=gn placeholder="Nom de la partie" value="Chat Géant"><input id=pn placeholder="Votre pseudo" value="${esc(localStorage.pseudo||'')}">
+<label>Rayon de la zone (m)<input id=rad type=number value=300></label>
+<label>Durée d'un tour de souris (min)<input id=ms type=number value=10></label>
+<label>Durée totale (min)<input id=ts type=number value=60></label>
+<label>Nombre de chats<input id=nc type=number value=1 min=1></label>
+<label>Joueurs minimum<input id=mn type=number value=2></label><label>Joueurs maximum<input id=mx type=number value=12></label>
+<label>Distance de capture (m)<input id=cap type=number value=5></label>
+<label>Mode<select id=md><option value=classic>Classique (plusieurs chats : réglez le nombre)</option><option value=rotation>Rotation</option><option value=last>Dernière souris</option><option value=timer>Chronomètre</option></select></label>
+<p>Touchez la carte pour placer le centre de la zone :</p><div id=map class=pick></div>
+<button onclick="doCreate()">Créer</button><button class=g onclick="home()">Retour</button></div>`);
+  const m=S.map=L.map('map').setView([46.6,2.4],5);tiles(m);let c=null,k=null;S.c=null;
+  const put=ll=>{S.c=ll;k&&k.remove();c&&c.remove();k=L.marker(ll).addTo(m);c=L.circle(ll,{radius:+$('#rad').value||300,color:'#f80'}).addTo(m)};
+  m.on('click',e=>put(e.latlng));$('#rad').oninput=()=>S.c&&put(S.c);
+  navigator.geolocation&&navigator.geolocation.getCurrentPosition(p=>{m.setView([p.coords.latitude,p.coords.longitude],16);put(L.latLng(p.coords.latitude,p.coords.longitude))},()=>{},{enableHighAccuracy:true});
+}
+async function doCreate(){
+  if(!S.c)return alert('Touchez la carte pour choisir le centre de la zone');
+  const v=i=>Math.round(+$('#'+i).value);localStorage.pseudo=$('#pn').value;
+  enter(await rpc('create_game',{p_name:$('#gn').value,p_host:$('#pn').value,p_lat:S.c.lat,p_lng:S.c.lng,p_rad:v('rad'),p_mouse:v('ms')*60,p_total:v('ts')*60,p_cats:v('nc'),p_min:v('mn'),p_max:v('mx'),p_cap:v('cap'),p_mode:$('#md').value}));
+}
+
+function lobby(){killMap();const g=S.st.game,me=S.st.me,ps=S.st.players;
+  app(`<div class=pad><h2>${esc(g.name)}</h2><div class=code>${esc(g.code)}</div><p>Partagez ce code. Zone ${g.radius_m} m, tour de souris ${g.mouse_s/60} min, total ${g.total_s/60} min, ${g.n_cats} chat(s), capture à ${g.capture_m} m, mode ${g.mode}. ${S.ok?'🟢 connecté':'🔴 hors ligne'}</p>
+<h3>Joueurs ${ps.length}/${g.max_p} (min ${g.min_p})</h3><ul>${ps.map(p=>`<li>🟢 ${esc(p.name)}${p.id===me.id?' (vous)':''}</li>`).join('')}</ul>
+<label class=chk><input type=checkbox ${S.share?'checked':''} onchange="consent(this.checked)"> J'accepte de partager ma position GPS pendant la partie. Je peux l'arrêter à tout moment.</label>
+${me.host?`<button ${ps.length<g.min_p?'disabled':''} onclick="rpc('start_game',{p_g:S.gid}).then(poll)">Lancer la partie</button>${ps.length<g.min_p?`<small>Il manque des joueurs (minimum ${g.min_p}).</small>`:''}`:'<p>En attente de l\'organisateur…</p>'}
+<button class=g onclick="leave()">Quitter</button></div>`)}
+
+function game(){const g=S.st.game;
+  if(!$('#map')){killMap();app('<div id=map class=full></div><div id=ui class=sheet></div>');
+    S.map=L.map('map',{zoomControl:false}).setView([g.c_lat,g.c_lng],16);tiles(S.map);
+    S.map.fitBounds(L.circle([g.c_lat,g.c_lng],{radius:g.radius_m,color:'#f80',weight:3,fillOpacity:.05}).addTo(S.map).getBounds())}
+  updMap();$('#ui').innerHTML=panel();tickTxt()}
+function updMap(){const live=new Set(),put=(id,ll,col,tip)=>{live.add(id);let m=S.mk[id];
+    if(!m)S.mk[id]=L.circleMarker(ll,{radius:9,color:'#fff',weight:2,fillColor:col,fillOpacity:1}).addTo(S.map).bindTooltip(tip,{permanent:true,direction:'top'});
+    else{m.setLatLng(ll);m.setTooltipContent(tip)}};
+  if(S.pos)put('me',[S.pos.lat,S.pos.lng],'#3b82f6','Moi');
+  S.st.players.forEach(p=>{if(p.lat!=null)put(p.id,[p.lat,p.lng],'#f59e0b','🐭 '+esc(p.name))}); // seul un chat reçoit des coordonnées d'autrui
+  Object.keys(S.mk).forEach(k=>{if(!live.has(k)){S.mk[k].remove();delete S.mk[k]}})}
+
+function panel(){
+  const g=S.st.game,me=S.st.me,ps=S.st.players,cat=me.role==='cat',P=S.pos,out=P?dist(P.lat,P.lng,g.c_lat,g.c_lng):0;
+  const w=!S.share?'⚠️ Partage GPS arrêté : vos actions GPS sont suspendues':S.gpsErr&&!P?'⚠️ GPS : '+esc(S.gpsErr):!P||Date.now()-P.t>15000?'⚠️ Position GPS indisponible ou ancienne'
+    :P.acc>g.max_acc?'⚠️ GPS imprécis (±'+Math.round(P.acc)+' m), captures suspendues':out>g.radius_m?'🚫 HORS ZONE : revenez dans le cercle':out>g.radius_m-30?'⚠️ Vous approchez de la limite':'';
+  const row=p=>{const d=p.lat!=null&&P?Math.round(dist(P.lat,P.lng,p.lat,p.lng)):null,live=p.role==='mouse'&&p.state==='alive';
+    return `<li>${p.role==='cat'?'🐱':p.role?'🐭':'•'} ${esc(p.name)}${p.id===me.id?' (moi)':''} <small>${p.state==='caught'?'capturé':p.state==='safe'?'survécu':d!=null?d+' m'+(p.age>15?' ⏱'+Math.round(p.age)+'s':''):''}</small>${live&&p.deadline?` <b data-dl="${T(p.deadline)}"></b>`:''}${cat&&p.lat!=null?` <button onclick="capt('${p.id}')">Capturer</button>`:''}</li>`};
+  const al=ps.filter(p=>p.role==='mouse'&&p.state==='alive'),ct=ps.filter(p=>p.role==='cat');
+  return `<div>${S.ok?'🟢':'🔴'} ${cat?'🐱 Vous êtes le CHAT':'🐭 Vous êtes une SOURIS'} · fin dans <b data-dl="${T(g.started_at)+g.total_s*1000}"></b>${g.status==='paused'?' · ⏸ PAUSE':''}</div>
+${w?`<div class=warn>${w}</div>`:''}
+${!cat&&me.state==='alive'&&me.deadline?`<div class=big2>⏱ <b data-dl="${T(me.deadline)}"></b></div>`:''}
+${me.state==='caught'?'<div class=warn>Vous avez été capturé(e).</div>':me.state==='safe'?'<div class=ok>Vous avez survécu 🎉</div>':''}
+<ul>${ps.map(row).join('')}</ul>${me.host?host(al,ct):''}
+<small>${S.st.events.slice(0,4).map(e=>esc(e.txt)).join('<br>')}</small>
+<button class=g onclick="consent(${!S.share})">${S.share?'Arrêter le partage GPS':'Reprendre le partage GPS'}</button>`}
+function host(al,ct){const g=S.st.game,o=(a,k)=>a.map(p=>`<option value="${p.id}" ${S.sel[k]===p.id?'selected':''}>${esc(p.name)}</option>`).join('');
+  return `<div class=row><button onclick="ctl('${g.status==='paused'?'resume':'pause'}')">${g.status==='paused'?'▶ Reprendre':'⏸ Pause'}</button><button class=r onclick="confirm('Terminer la partie ?')&&ctl('end')">⏹ Terminer</button></div>
+<details ${S.open?'open':''} ontoggle="S.open=this.open"><summary>Changer le chat</summary>${ct.length>1?`<select onchange="S.sel.o=this.value"><option value="">Chat à remplacer…</option>${o(ct,'o')}</select>`:''}
+<select onchange="S.sel.n=this.value"><option value="">Souris qui devient chat…</option>${o(al,'n')}</select><button onclick="chg()">Confirmer le changement</button></details>`}
+const ctl=a=>rpc('host_ctl',{p_g:S.gid,p_act:a}).then(poll);
+async function chg(){const ct=S.st.players.filter(p=>p.role==='cat'),o=S.sel.o||(ct[0]&&ct[0].id);
+  if(!S.sel.n||!o)return alert('Choisissez la souris qui devient chat');if(!confirm('Remplacer le chat ?'))return;
+  await rpc('set_cat',{p_g:S.gid,p_old:o,p_new:S.sel.n});S.sel={};S.open=false;poll()}
+async function capt(t){if(!confirm('Déclarer la capture ? Le serveur va la vérifier.'))return;await rpc('declare_capture',{p_g:S.gid,p_t:t});flash('🎉 CAPTURE !');poll()}
+function flash(t){const d=document.createElement('div');d.className='flash';d.textContent=t;document.body.append(d);setTimeout(()=>d.remove(),2300)}
+
+function endScr(){killMap();stopGPS();const g=S.st.game,ps=S.st.players,sv=ps.filter(p=>p.role==='mouse'&&p.state!=='caught').length,cp=ps.reduce((a,p)=>a+(p.caught_n||0),0);
+  app(`<div class=pad><h2>🏁 Fin de partie</h2><div class=big2>${g.mode==='rotation'?'Partie terminée':sv?'🐭 Les souris gagnent':'🐱 Les chats gagnent'}</div>
+<p>Durée ${fmt(T(g.ended_at)-T(g.started_at))} · captures validées : ${cp} · souris survivantes : ${sv}</p>
+<ul>${ps.map(p=>`<li>${p.role==='cat'?'🐱':'🐭'} ${esc(p.name)} : ${p.caught_n||0} capture(s), ${p.state==='caught'?'capturé':p.role==='cat'?'chat':'survivant'}</li>`).join('')}</ul>
+<h3>Historique</h3><small>${S.st.events.map(e=>esc(e.txt)).join('<br>')}</small>
+<button onclick="createScr()">Recommencer</button><button class=g onclick="leave()">Accueil</button></div>`)}
+
+/* ---------- Chronomètres (horloge serveur) et alerte avant la fin ---------- */
+function tickTxt(){document.querySelectorAll('[data-dl]').forEach(e=>e.textContent=fmt(+e.dataset.dl-ref()))}
+let aud;function beep(){if(localStorage.snd!=='0'){try{aud=aud||new AudioContext();const o=aud.createOscillator();o.connect(aud.destination);o.start();o.stop(aud.currentTime+.25)}catch(e){}}navigator.vibrate&&navigator.vibrate(300)}
+setInterval(()=>{if(!S.st)return;tickTxt();const m=S.st.me;
+  if(m.role==='mouse'&&m.state==='alive'&&m.deadline&&S.st.game.status==='running'){const r=Math.round((T(m.deadline)-sNow())/1000);if(r===60||r===10)beep()}},1000);
+
+(async()=>{app('<p class=pad>Chargement…</p>');
+  const{data}=await sb.auth.getSession();
+  if(!data.session){const r=await sb.auth.signInAnonymously();if(r.error)return app('<p class=pad>Activez « Allow anonymous sign-ins » dans Supabase (Authentication), puis rechargez.</p>')}
+  if(S.gid){try{await enter(S.gid)}catch(e){leave()}return}
+  home()})();
+</script></body></html>
