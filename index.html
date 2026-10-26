@@ -19,7 +19,14 @@ ul{list-style:none;padding:0}li{padding:6px 0;border-bottom:1px solid #1e293b}.s
 .warn{background:#7f1d1d;padding:8px;border-radius:8px;margin:6px 0}.ok{background:#14532d;padding:8px;border-radius:8px}.row{display:flex;gap:8px}
 .flash{position:fixed;inset:0;display:grid;place-items:center;font-size:48px;font-weight:900;background:#000a;z-index:3000;animation:f 2.2s forwards}
 @keyframes f{0%{transform:scale(.3);opacity:0}20%{transform:scale(1.1);opacity:1}100%{opacity:0}}
+#chb{position:fixed;top:max(10px,env(safe-area-inset-top));right:10px;z-index:2500;width:auto;padding:10px 14px;margin:0;border-radius:24px}
+#chatw{position:fixed;left:0;right:0;bottom:0;height:62vh;z-index:2600;background:#0b1220;display:flex;flex-direction:column;padding:10px 12px calc(10px + env(safe-area-inset-bottom));border-radius:16px 16px 0 0;box-shadow:0 -4px 20px #000a}
+#chb[hidden],#chatw[hidden]{display:none}
+#msgs{flex:1;overflow:auto;margin:8px 0}.chh{display:flex;gap:8px;align-items:center;justify-content:space-between}.chh button{width:auto;margin:0;padding:6px 12px}
+.m{padding:4px 0;word-break:break-word}.m.me b{color:#f59e0b}.snd{width:auto!important;margin:4px 0 4px 6px!important}#cin{margin:4px 0}
 </style></head><body><div id="app"></div>
+<button id=chb onclick="toggleChat()" hidden>💬</button>
+<div id=chatw hidden><div class=chh><b>💬 Chat</b><span id=chm></span><button class=g onclick="toggleChat()">✕</button></div><div id=msgs></div><div class=row><input id=cin maxlength=200 placeholder="Votre message…" onkeydown="event.key==='Enter'&&sendMsg()"><button class=snd onclick="sendMsg()">Envoyer</button></div></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.110.1"></script>
 <script>
@@ -60,8 +67,8 @@ async function poll(){
   if(S.st)draw();
 }
 async function enter(g){S.gid=g;localStorage.gid=g;await load();if(!S.poll)S.poll=setInterval(poll,3000);draw()}
-function leave(){clearInterval(S.poll);S.poll=null;S.gid=null;S.st=null;localStorage.removeItem('gid');stopGPS();home()}
-function draw(){const s=S.st.game.status;if(s==='ended'&&S.poll){clearInterval(S.poll);S.poll=null}s==='lobby'?lobby():s==='ended'?endScr():game()}
+function leave(){clearInterval(S.poll);S.poll=null;S.gid=null;S.st=null;localStorage.removeItem('gid');stopGPS();updChat();home()}
+function draw(){const s=S.st.game.status;if(s==='ended'&&S.poll){clearInterval(S.poll);S.poll=null}s==='lobby'?lobby():s==='ended'?endScr():game();updChat()}
 
 /* ---------- Écrans ---------- */
 function home(){killMap();app(`<div class=hero><div class=big>🐱 CHAT GÉANT 🐭</div><p>Le chat et la souris, en vrai, avec carte GPS</p>
@@ -75,14 +82,16 @@ async function doJoin(){localStorage.pseudo=$('#jn').value;enter(await rpc('join
 function createScr(){killMap();app(`<div class=pad><h2>Créer une partie</h2>
 <input id=gn placeholder="Nom de la partie" value="Chat Géant"><input id=pn placeholder="Votre pseudo" value="${esc(localStorage.pseudo||'')}">
 <label>Rayon de la zone (m)<input id=rad type=number value=300></label>
-<label>Durée d'un tour de souris (min)<input id=ms type=number value=10></label>
+<label id=msw>Durée d'un tour de souris (min)<input id=ms type=number value=10></label>
 <label>Durée totale (min)<input id=ts type=number value=60></label>
 <label>Nombre de chats<input id=nc type=number value=1 min=1></label>
 <label>Joueurs minimum<input id=mn type=number value=2></label><label>Joueurs maximum<input id=mx type=number value=12></label>
 <label>Distance de capture (m)<input id=cap type=number value=5></label>
-<label>Mode<select id=md><option value=classic>Classique (plusieurs chats : réglez le nombre)</option><option value=rotation>Rotation</option><option value=last>Dernière souris</option><option value=timer>Chronomètre</option></select></label>
+<label>Rayon du flou de la souris (m, 0 = position exacte)<input id=fz type=number value=50></label>
+<label>Mode<select id=md><option value=classic>Classique (plusieurs chats : réglez le nombre)</option><option value=rotation>Rotation</option><option value=last>Dernière souris</option><option value=timer>Chronomètre</option><option value=cumul>Cumul : sans fin, gagne celui qui a le plus de temps en souris</option></select></label>
 <p>Touchez la carte pour placer le centre de la zone :</p><div id=map class=pick></div>
 <button onclick="doCreate()">Créer</button><button class=g onclick="home()">Retour</button></div>`);
+  $('#md').onchange=()=>{$('#msw').style.display=$('#md').value==='cumul'?'none':''};
   const m=S.map=L.map('map').setView([46.6,2.4],5);tiles(m);let c=null,k=null;S.c=null;
   const put=ll=>{S.c=ll;k&&k.remove();c&&c.remove();k=L.marker(ll).addTo(m);c=L.circle(ll,{radius:+$('#rad').value||300,color:'#f80'}).addTo(m)};
   m.on('click',e=>put(e.latlng));$('#rad').oninput=()=>S.c&&put(S.c);
@@ -91,7 +100,7 @@ function createScr(){killMap();app(`<div class=pad><h2>Créer une partie</h2>
 async function doCreate(){
   if(!S.c)return alert('Touchez la carte pour choisir le centre de la zone');
   const v=i=>Math.round(+$('#'+i).value);localStorage.pseudo=$('#pn').value;
-  enter(await rpc('create_game',{p_name:$('#gn').value,p_host:$('#pn').value,p_lat:S.c.lat,p_lng:S.c.lng,p_rad:v('rad'),p_mouse:v('ms')*60,p_total:v('ts')*60,p_cats:v('nc'),p_min:v('mn'),p_max:v('mx'),p_cap:v('cap'),p_mode:$('#md').value}));
+  enter(await rpc('create_game',{p_name:$('#gn').value,p_host:$('#pn').value,p_lat:S.c.lat,p_lng:S.c.lng,p_rad:v('rad'),p_mouse:v('ms')*60,p_total:v('ts')*60,p_cats:v('nc'),p_min:v('mn'),p_max:v('mx'),p_cap:v('cap'),p_fuzz:v('fz'),p_mode:$('#md').value}));
 }
 
 function lobby(){killMap();const g=S.st.game,me=S.st.me,ps=S.st.players;
@@ -106,11 +115,11 @@ function game(){const g=S.st.game;
     S.map=L.map('map',{zoomControl:false}).setView([g.c_lat,g.c_lng],16);tiles(S.map);
     S.map.fitBounds(L.circle([g.c_lat,g.c_lng],{radius:g.radius_m,color:'#f80',weight:3,fillOpacity:.05}).addTo(S.map).getBounds())}
   updMap();$('#ui').innerHTML=panel();tickTxt()}
-function updMap(){const live=new Set(),put=(id,ll,col,tip)=>{live.add(id);let m=S.mk[id];
-    if(!m)S.mk[id]=L.circleMarker(ll,{radius:9,color:'#fff',weight:2,fillColor:col,fillOpacity:1}).addTo(S.map).bindTooltip(tip,{permanent:true,direction:'top'});
-    else{m.setLatLng(ll);m.setTooltipContent(tip)}};
+function updMap(){const live=new Set(),put=(id,ll,col,tip,rad)=>{live.add(id);let m=S.mk[id];
+    if(!m)S.mk[id]=(rad>0?L.circle(ll,{radius:rad,color:col,weight:2,fillColor:col,fillOpacity:.25}):L.circleMarker(ll,{radius:9,color:'#fff',weight:2,fillColor:col,fillOpacity:1})).addTo(S.map).bindTooltip(tip,{permanent:true,direction:'top'});
+    else{m.setLatLng(ll);rad>0&&m.setRadius(rad);m.setTooltipContent(tip)}};
   if(S.pos)put('me',[S.pos.lat,S.pos.lng],'#3b82f6','Moi');
-  S.st.players.forEach(p=>{if(p.lat!=null)put(p.id,[p.lat,p.lng],'#f59e0b','🐭 '+esc(p.name))}); // seul un chat reçoit des coordonnées d'autrui
+  S.st.players.forEach(p=>{if(p.lat!=null)put(p.id,[p.lat,p.lng],'#f59e0b','🐭 '+esc(p.name),p.r)}); // seul un chat reçoit des coordonnées d'autrui
   Object.keys(S.mk).forEach(k=>{if(!live.has(k)){S.mk[k].remove();delete S.mk[k]}})}
 
 function panel(){
@@ -118,11 +127,12 @@ function panel(){
   const w=!S.share?'⚠️ Partage GPS arrêté : vos actions GPS sont suspendues':S.gpsErr&&!P?'⚠️ GPS : '+esc(S.gpsErr):!P||Date.now()-P.t>15000?'⚠️ Position GPS indisponible ou ancienne'
     :P.acc>g.max_acc?'⚠️ GPS imprécis (±'+Math.round(P.acc)+' m), captures suspendues':out>g.radius_m?'🚫 HORS ZONE : revenez dans le cercle':out>g.radius_m-30?'⚠️ Vous approchez de la limite':'';
   const row=p=>{const d=p.lat!=null&&P?Math.round(dist(P.lat,P.lng,p.lat,p.lng)):null,live=p.role==='mouse'&&p.state==='alive';
-    return `<li>${p.role==='cat'?'🐱':p.role?'🐭':'•'} ${esc(p.name)}${p.id===me.id?' (moi)':''} <small>${p.state==='caught'?'capturé':p.state==='safe'?'survécu':d!=null?d+' m'+(p.age>15?' ⏱'+Math.round(p.age)+'s':''):''}</small>${live&&p.deadline?` <b data-dl="${T(p.deadline)}"></b>`:''}${cat&&p.lat!=null?` <button onclick="capt('${p.id}')">Capturer</button>`:''}</li>`};
+    return `<li>${p.role==='cat'?'🐱':p.role?'🐭':'•'} ${esc(p.name)}${p.id===me.id?' (moi)':''} <small>${p.state==='caught'?'capturé':p.state==='safe'?'survécu':d!=null?(p.r?'≈ ':'')+d+' m'+(p.r?' ±'+p.r:'')+(p.age>15?' ⏱'+Math.round(p.age)+'s':''):''}</small>${live&&p.deadline?` <b data-dl="${T(p.deadline)}"></b>`:''}${g.mode==='cumul'&&p.acc_s!=null?` <b data-ac="${p.acc_s}" data-sn="${p.since||''}"></b>`:''}${cat&&p.lat!=null?` <button onclick="capt('${p.id}')">Capturer</button>`:''}</li>`};
   const al=ps.filter(p=>p.role==='mouse'&&p.state==='alive'),ct=ps.filter(p=>p.role==='cat');
   return `<div>${S.ok?'🟢':'🔴'} ${cat?'🐱 Vous êtes le CHAT':'🐭 Vous êtes une SOURIS'} · fin dans <b data-dl="${T(g.started_at)+g.total_s*1000}"></b>${g.status==='paused'?' · ⏸ PAUSE':''}</div>
 ${w?`<div class=warn>${w}</div>`:''}
 ${!cat&&me.state==='alive'&&me.deadline?`<div class=big2>⏱ <b data-dl="${T(me.deadline)}"></b></div>`:''}
+${g.mode==='cumul'?`<div class=big2>🐭 <b data-ac="${me.acc_s}" data-sn="${me.since||''}"></b> en souris</div>`:''}
 ${me.state==='caught'?'<div class=warn>Vous avez été capturé(e).</div>':me.state==='safe'?'<div class=ok>Vous avez survécu 🎉</div>':''}
 <ul>${ps.map(row).join('')}</ul>${me.host?host(al,ct):''}
 <small>${S.st.events.slice(0,4).map(e=>esc(e.txt)).join('<br>')}</small>
@@ -138,15 +148,34 @@ async function chg(){const ct=S.st.players.filter(p=>p.role==='cat'),o=S.sel.o||
 async function capt(t){if(!confirm('Déclarer la capture ? Le serveur va la vérifier.'))return;await rpc('declare_capture',{p_g:S.gid,p_t:t});flash('🎉 CAPTURE !');poll()}
 function flash(t){const d=document.createElement('div');d.className='flash';d.textContent=t;document.body.append(d);setTimeout(()=>d.remove(),2300)}
 
-function endScr(){killMap();stopGPS();const g=S.st.game,ps=S.st.players,sv=ps.filter(p=>p.role==='mouse'&&p.state!=='caught').length,cp=ps.reduce((a,p)=>a+(p.caught_n||0),0);
-  app(`<div class=pad><h2>🏁 Fin de partie</h2><div class=big2>${g.mode==='rotation'?'Partie terminée':sv?'🐭 Les souris gagnent':'🐱 Les chats gagnent'}</div>
+function endScr(){killMap();stopGPS();const g=S.st.game,ps=S.st.players,sv=ps.filter(p=>p.role==='mouse'&&p.state!=='caught').length,cp=ps.reduce((a,p)=>a+(p.caught_n||0),0);const cm=g.mode==='cumul',top=Math.max(...ps.map(p=>p.acc_s||0)),win=ps.filter(p=>(p.acc_s||0)===top).map(p=>esc(p.name)).join(' & ');
+  app(`<div class=pad><h2>🏁 Fin de partie</h2><div class=big2>${cm?'🏆 '+win:g.mode==='rotation'?'Partie terminée':sv?'🐭 Les souris gagnent':'🐱 Les chats gagnent'}</div>
 <p>Durée ${fmt(T(g.ended_at)-T(g.started_at))} · captures validées : ${cp} · souris survivantes : ${sv}</p>
-<ul>${ps.map(p=>`<li>${p.role==='cat'?'🐱':'🐭'} ${esc(p.name)} : ${p.caught_n||0} capture(s), ${p.state==='caught'?'capturé':p.role==='cat'?'chat':'survivant'}</li>`).join('')}</ul>
+<ul>${(cm?[...ps].sort((a,b)=>b.acc_s-a.acc_s):ps).map(p=>`<li>${p.role==='cat'?'🐱':'🐭'} ${esc(p.name)} : ${cm?fmtH(p.acc_s*1000)+' en souris, ':''}${p.caught_n||0} capture(s), ${p.state==='caught'?'capturé':p.role==='cat'?'chat':'survivant'}</li>`).join('')}</ul>
 <h3>Historique</h3><small>${S.st.events.map(e=>esc(e.txt)).join('<br>')}</small>
 <button onclick="createScr()">Recommencer</button><button class=g onclick="leave()">Accueil</button></div>`)}
 
+/* ---------- Chat (modéré par l'organisateur : activer/désactiver, supprimer) ---------- */
+const lastId=()=>{const m=(S.st&&S.st.msgs)||[];return m.length?m[m.length-1].id:0};
+function toggleChat(){S.chat=!S.chat;$('#chatw').hidden=!S.chat;updChat();if(S.chat){$('#msgs').scrollTop=1e9;$('#cin').focus()}}
+function updChat(){
+  const st=S.st,on=st&&st.game.status!=='ended';
+  $('#chb').hidden=!on;if(!on){$('#chatw').hidden=true;S.chat=false;return}
+  if(S.seen==null||S.chat)S.seen=lastId();
+  const ms=st.msgs||[],me=st.me,el=$('#msgs'),bot=el.scrollTop+el.clientHeight>=el.scrollHeight-30,un=ms.filter(m=>m.id>S.seen&&!m.mine).length;
+  $('#chb').textContent='💬'+(un?' '+un:'');
+  $('#cin').disabled=!st.game.chat_on;$('#cin').placeholder=st.game.chat_on?'Votre message…':'Chat désactivé';
+  $('#chm').innerHTML=me.host?`<button class=g onclick="ctl('${st.game.chat_on?'chat_off':'chat_on'}')">${st.game.chat_on?'Désactiver':'Activer'}</button>`:'';
+  el.innerHTML=ms.map(m=>`<div class="m${m.mine?' me':''}"><b>${esc(m.name)}</b> ${esc(m.txt)}${me.host?` <a href="#" onclick="delMsg(${m.id});return false">✕</a>`:''}</div>`).join('')||'<small>Aucun message</small>';
+  if(bot)el.scrollTop=1e9;
+}
+async function sendMsg(){const i=$('#cin'),t=i.value.trim();if(!t)return;i.value='';await rpc('send_msg',{p_g:S.gid,p_txt:t});poll()}
+const delMsg=id=>rpc('del_msg',{p_g:S.gid,p_id:id}).then(poll);
+
 /* ---------- Chronomètres (horloge serveur) et alerte avant la fin ---------- */
-function tickTxt(){document.querySelectorAll('[data-dl]').forEach(e=>e.textContent=fmt(+e.dataset.dl-ref()))}
+const fmtH=ms=>{ms=Math.max(0,Math.floor(ms/1000));return Math.floor(ms/3600)+':'+String(Math.floor(ms/60)%60).padStart(2,'0')+':'+String(ms%60).padStart(2,'0')};
+function tickTxt(){document.querySelectorAll('[data-dl]').forEach(e=>e.textContent=fmt(+e.dataset.dl-ref()));
+  document.querySelectorAll('[data-ac]').forEach(e=>e.textContent=fmtH(+e.dataset.ac*1000+(e.dataset.sn?ref()-+e.dataset.sn:0)))}
 let aud;function beep(){if(localStorage.snd!=='0'){try{aud=aud||new AudioContext();const o=aud.createOscillator();o.connect(aud.destination);o.start();o.stop(aud.currentTime+.25)}catch(e){}}navigator.vibrate&&navigator.vibrate(300)}
 setInterval(()=>{if(!S.st)return;tickTxt();const m=S.st.me;
   if(m.role==='mouse'&&m.state==='alive'&&m.deadline&&S.st.game.status==='running'){const r=Math.round((T(m.deadline)-sNow())/1000);if(r===60||r===10)beep()}},1000);
